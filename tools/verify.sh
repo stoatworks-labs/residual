@@ -42,6 +42,10 @@
 #               that cannot fail is not a check.
 #   sweep       no control is silently dead. A GLSL uniform whose name does not
 #               match the C++ is ignored without a word.
+#   pipe        the fleet's --pipe format end to end: whole frames in give
+#               whole frames out, the right way up; a partial frame at the end
+#               is dropped, not rendered; a cue naming no parameter is refused
+#               before a frame is read. The project video is made through this.
 #   plugMain    does the bundle contain a plugin at all -- a file-scope
 #               CFFGLPluginInfo nothing names, which a linker may drop while
 #               still producing a bundle that loads and exports plugMain.
@@ -219,6 +223,58 @@ if python3 tools/sweep.py --binary "$RSTEST" > /tmp/residual-sweep.txt 2>&1; the
 else
 	tail -4 /tmp/residual-sweep.txt | sed 's/^/   /'
 	fail "tools/sweep.py reports a dead control"
+fi
+
+step "pipe"
+# Q 0 through the pipe: the codec is lossless (--lossless proves that
+# bitwise on the decoded texture), so what comes out must be what went in --
+# which is what finds a pipe that flips one way and not the other, or drops
+# a frame. The composite writes the host's RGBA8 through the GL's
+# float-to-fixed conversion, where the specification only PREFERS round-to-
+# nearest, so the tolerance is one code value and not zero.
+if python3 - "$RSTEST" <<'PIPE_PY' > /tmp/residual-pipe.txt 2>&1
+import os, subprocess, sys, tempfile
+rstest = sys.argv[ 1 ]
+W, H, N = 64, 36, 5
+def frame( f ):
+	# Asymmetric in x and in y, and moving, so a flip or a lost frame shows.
+	return bytes( v for y in range( H ) for x in range( W )
+	              for v in ( ( x * 4 + f * 3 ) % 256, ( y * 7 ) % 256, ( x * y + f ) % 256, 255 ) )
+frames = [ frame( f ) for f in range( N ) ]
+failures = 0
+def report( ok, what ):
+	global failures
+	print( ( "ok    " if ok else "FAIL  " ) + what )
+	failures += 0 if ok else 1
+with tempfile.TemporaryDirectory() as d:
+	cues = os.path.join( d, "cues.txt" )
+	with open( cues, "w" ) as f:
+		f.write( "# a comment\n0 Q 0\n0 Chroma Q 0\n0 Residual Gain 0.5\n2 Refresh 1\n" )
+	run = subprocess.run( [ rstest, "--pipe", "--size", f"{W}x{H}", "--fps", "30", "--script", cues ],
+	                      input=b"".join( frames ) + b"\x80" * 100, capture_output=True )
+	out = run.stdout
+	report( run.returncode == 0, f"exits 0 (got {run.returncode})" )
+	report( len( out ) == N * W * H * 4, f"{N} whole frames and 100 stray bytes in, {len( out ) // ( W * H * 4 )} frames out" )
+	worst = 0
+	for f in range( min( N, len( out ) // ( W * H * 4 ) ) ):
+		got = out[ f * W * H * 4 : ( f + 1 ) * W * H * 4 ]
+		worst = max( [ worst ] + [ abs( a - b ) for i, ( a, b ) in enumerate( zip( got, frames[ f ] ) ) if i % 4 != 3 ] )
+	report( worst <= 1, f"Q 0 and Chroma Q 0 through the pipe give the source back, the right way up: worst {worst} code(s)" )
+	log = run.stderr.decode().strip().splitlines()[ -1 ]
+	report( "refresh 2;" in log, "a Refresh cue presses the button on its frame: " + log.split( "; ", 1 )[ -1 ] )
+	with open( cues, "w" ) as f:
+		f.write( "0 Drop Eye 2\n" )
+	bad = subprocess.run( [ rstest, "--pipe", "--size", f"{W}x{H}", "--script", cues ],
+	                      input=frames[ 0 ], capture_output=True )
+	report( bad.returncode == 2 and not bad.stdout, "a cue naming no parameter is refused before a frame is written" )
+sys.exit( 1 if failures else 0 )
+PIPE_PY
+then
+	sed 's/^/   /' /tmp/residual-pipe.txt
+	pass "the --pipe format round-trips"
+else
+	sed 's/^/   /' /tmp/residual-pipe.txt
+	fail "--pipe -- see /tmp/residual-pipe.txt"
 fi
 
 BUNDLE="$BUILD/Residual.bundle"

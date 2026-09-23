@@ -18,6 +18,14 @@ GOP logic or anything that reads or writes an integer texture.
 - Set anything by name: `--set "Block Size=0" --set "Search Range=32" --set "Q=0"`
 - List parameters, with their kinds and real ranges: `./build/rstest --list`
 - The demo card on its own: `./build/rstest --card /tmp/card.png`
+- Footage through the plugin (the fleet `--pipe` format, how the project video is made):
+  `ffmpeg -i in.mov -f rawvideo -pix_fmt rgba - | ./build/rstest --pipe --size 1920x1080 --fps 30 --script cues.txt | ffmpeg -f rawvideo -pix_fmt rgba -s 1920x1080 -r 30 -i - out.mp4`
+- Cue sheet: `frame Name value` per line, `#` comments, host units (0..1 floats,
+  real integer counts, option index, `1` presses an event). Floats and integers
+  hold-then-ramp as plumbicon; options and booleans STEP; `Refresh 1` presses on
+  that frame only; `frame Onset 1` injects one loud spectrum frame (drives Drop
+  I = On Onset). Unknown names, About and Audio are refused. The codec's
+  I-frames, drops, cuts, presses and onsets are printed to stderr at the end.
 
 ## Verify
 - Everything: `tools/verify.sh` (fresh **universal** Release build + every
@@ -25,6 +33,8 @@ GOP logic or anything that reads or writes an integer texture.
 - Every check in one process: `./build/rstest --transform --vectors --lossless
   --mosh --gop --drift --resize --onset --negative`
 - Or through ctest, one per check: `ctest --test-dir build --output-on-failure`
+- The pipe: `tools/verify.sh`'s `pipe` step round-trips 5 frames at Q 0 (source
+  back, right way up), drops a trailing partial frame, refuses an unknown cue
 - No dead controls: `python3 tools/sweep.py` (`--size WxH`, `--frames N`)
 - The cost: `./build/rstest --bench --frames 60`, and at the most expensive
   search: `--set "Block Size=0" --set "Search Range=32"`

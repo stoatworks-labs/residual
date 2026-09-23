@@ -187,6 +187,9 @@ The offline harness renders the real plugin class headlessly and measures it:
     ./build/rstest --drift --resize --onset                          # the codec's behaviour over time
     ./build/rstest --negative                                       # those checks, perturbed, must fail
     ./build/rstest --bench --frames 60                              # 720p through 4K
+    ffmpeg -i in.mov -f rawvideo -pix_fmt rgba - \
+      | ./build/rstest --pipe --size 1920x1080 --fps 30 --script cues.txt \
+      | ffmpeg -f rawvideo -pix_fmt rgba -s 1920x1080 -r 30 -i - out.mp4   # footage through it
     python3 tools/sweep.py                                          # no control is silently dead
     tools/verify.sh                                                 # all of it, on a fresh universal build
 

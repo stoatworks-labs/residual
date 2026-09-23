@@ -174,6 +174,33 @@ offset. Subsampling would have to come with an upsampler that breaks Q 0's
 losslessness, and the round this was built in was about the verification
 pass. It is the obvious v0.2 for the look.
 
+**`--pipe` is the fleet's format, and the cue sheet is plumbicon's with two
+deliberate differences.** Raw RGBA on stdin and stdout at `--size`, stderr for
+everything else, a trailing partial frame dropped rather than rendered (half a
+frame of garbage would be a reference every later P-frame predicts from).
+`frame Name value` per line in HOST units: 0..1 for standard sliders, the real
+count for the `FF_TYPE_INTEGER` ones, the element value for options, 0/1 for
+booleans. Standard and integer tracks follow plumbicon exactly -- held before
+the first cue and after the last, linear between. The differences:
+
+- **Options and booleans STEP.** Drop I arms on *selection*, so a ramp from
+  Off (0) to All (2) would pass through Next (1) and arm a latch nobody asked
+  for. macroblock documents the same hazard and leaves it to the author; here
+  it is not reachable.
+- **An event is pressed on its cue's own frame (1 then 0), never held.**
+  Under plumbicon's rule a single `150 Refresh 1` would be held from frame 0
+  and make every frame an I-frame.
+
+`frame Onset 1` is the one name that is not a parameter: it hands the plugin one
+frame of `--onset`'s loud spectrum on a bed of silence, through the host's own
+`SetParamElementValue` call, so Drop I = On Onset can be filmed. It cannot fire
+on frame 0 (the detector is primed there) or within five frames of the last
+onset (its refractory period). A name that is not a parameter is refused before
+a frame is read, and so are the About buttons (they open a browser) and Audio
+(a spectrum, not a number). The clock is `SetTime( n * 1000 / fps )` in
+milliseconds from the frame number, as Resolume sends it, never accumulated --
+and used by the plugin for one log line.
+
 ---
 
 ## The traps

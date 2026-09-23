@@ -23,6 +23,16 @@
 	    rstest --onset             the first onset after a trigger drops an I-frame
 	    rstest --negative          the checks above can actually fail
 	    rstest --bench             the render cost, 720p through 4K
+	    rstest --pipe              raw RGBA frames in, raw RGBA frames out
+
+	`--pipe` takes the fleet's frame format, and is how the project video is
+	made -- real footage through the real plugin class:
+
+	    ffmpeg -i in.mov -f rawvideo -pix_fmt rgba - \
+	      | rstest --pipe --size 1920x1080 [--fps 30] [--script cues.txt] \
+	      | ffmpeg -f rawvideo -pix_fmt rgba -s 1920x1080 -r 30 -i - out.mp4
+
+	The cue sheet is described at loadScript() below.
 
 	Every check that touches a picture runs at 320x180 -- what CI uses -- and
 	at least one other raster. Every tolerance is a lattice: one code value,
@@ -37,12 +47,19 @@
 #include <OpenGL/gl3.h>
 #include <zlib.h>
 
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -412,6 +429,13 @@ struct Rig
 	double clockOrigin = 0.0;
 	int clockJumpAt    = -1;
 
+	/// What a second is multiplied by before SetTime. 1 for the checks;
+	/// --pipe sends 1000, because Resolume sends MILLISECONDS and a take is
+	/// meant to be what Arena would have done (fleet-notes: ffgl host time
+	/// units). The plugin records the clock and uses it for nothing, so this
+	/// is fidelity rather than function.
+	double timeScale = 1.0;
+
 	GLuint sourceTexture = 0;
 	GLuint outputTexture = 0;
 	GLuint outputFBO     = 0;
@@ -504,7 +528,7 @@ struct Rig
 		double seconds = clockOrigin + static_cast< double >( index ) / fps;
 		if( clockJumpAt >= 0 && index >= clockJumpAt )
 			seconds = static_cast< double >( index - clockJumpAt ) / fps;
-		plugin.SetTime( seconds );
+		plugin.SetTime( seconds * timeScale );
 
 		//The spectrum, written the way the host writes one.
 		for( int bin = 0; bin < audio::kBins; ++bin )
@@ -1816,6 +1840,381 @@ int runBench( int frames, const std::vector< std::pair< std::string, float > >& 
 }
 
 //---------------------------------------------------------------------------
+// --pipe, and its cue sheet.
+//
+// The fleet's cue format, as plumbicon's: one `frame  Parameter Name  value`
+// per line, `#` to end of line is a comment, the name is everything between
+// the frame and the last token (parameters have spaces in them; values never
+// do). Values are in the parameter's HOST units -- exactly what --set and
+// SetFloatParameter take, and what `rstest --list` prints the range of:
+//
+//   standard  0..1, normalised (Residual Gain 0.5 is a gain of 1.0; Vector
+//             Scale 0.25 is 1.0x; Q 0 is the lossless bypass)
+//   integer   the real count (Search Range 1..32, GOP 1..250, Vector Hold
+//             1..60); the plugin rounds to the nearest
+//   option    the element VALUE, 0-based (Drop I: 0 Off, 1 Next, 2 All,
+//             3 On Onset; Block Size: 0 = 8, 1 = 16, 2 = 32)
+//   boolean   0 or 1
+//   event     1 presses the button on that frame (1 then 0, as a host does)
+//
+// How a track becomes a value on each frame, by kind:
+//
+//   standard, integer   plumbicon's rule exactly: held at the first cue's
+//                       value before it, at the last cue's after it, and
+//                       LINEARLY interpolated between.
+//   option, boolean     STEP: the most recent cue at or before the frame
+//                       (the first cue's value before it). Not interpolated,
+//                       and deliberately not plumbicon's rule: Drop I arms
+//                       on SELECTION, so a ramp from Off to All would pass
+//                       through Next on the way and arm a latch nobody
+//                       asked for. macroblock warns about the same ramp.
+//   event               a press on each cue's own frame whose value is >= 0.5,
+//                       and nothing on any other frame. Never held: a held
+//                       Refresh would be an I-frame every frame.
+//
+// One name is not a parameter: `Onset`. A cue `frame Onset 1` hands the
+// plugin one frame of a loud spectrum through the host's own call, on a bed
+// of silence, which is a rise the detector cannot miss -- so Drop I = On
+// Onset can be driven from a cue sheet. See pipeSpectrum().
+//
+// An unknown name is REFUSED before a frame is read. A misspelled cue that
+// silently did nothing would produce a take that looks deliberate and is
+// wrong. The About block is refused too: those are buttons that open a web
+// browser. So is Audio, whose value is a whole spectrum, not a number.
+//---------------------------------------------------------------------------
+using Track = std::vector< std::pair< int, float > >;
+
+const char* const kOnsetCue = "Onset";
+
+std::map< std::string, Track > loadScript( const std::string& path, std::string& error )
+{
+	std::map< std::string, Track > tracks;
+	std::ifstream file( path );
+	if( !file )
+	{
+		error = "cannot open " + path;
+		return tracks;
+	}
+
+	std::string line;
+	int lineNumber = 0;
+	while( std::getline( file, line ) )
+	{
+		++lineNumber;
+		const size_t hash = line.find( '#' );
+		if( hash != std::string::npos )
+			line.erase( hash );
+
+		std::istringstream in( line );
+		int frame = 0;
+		if( !( in >> frame ) )
+			continue;//blank or comment
+
+		std::vector< std::string > words;
+		std::string word;
+		while( in >> word )
+			words.push_back( word );
+		if( words.size() < 2 || frame < 0 )
+		{
+			error = path + ":" + std::to_string( lineNumber ) + ": expected `frame Parameter Name value`";
+			return {};
+		}
+
+		char* end         = nullptr;
+		const float value = std::strtof( words.back().c_str(), &end );
+		if( end == words.back().c_str() || *end != '\0' )
+		{
+			error = path + ":" + std::to_string( lineNumber ) + ": '" + words.back() + "' is not a number";
+			return {};
+		}
+		words.pop_back();
+		std::string name = words.front();
+		for( size_t i = 1; i < words.size(); ++i )
+			name += " " + words[ i ];
+
+		tracks[ name ].emplace_back( frame, value );
+	}
+
+	//stable_sort, so two cues on one frame keep the order they were written in.
+	for( auto& entry : tracks )
+		std::stable_sort( entry.second.begin(), entry.second.end(),
+		                  []( const auto& a, const auto& b ) { return a.first < b.first; } );
+	return tracks;
+}
+
+/// plumbicon's valueAt: held before the first cue and after the last,
+/// linear between.
+float rampAt( const Track& track, int frame )
+{
+	if( track.empty() )
+		return 0.0f;
+	if( frame <= track.front().first )
+		return track.front().second;
+	if( frame >= track.back().first )
+		return track.back().second;
+
+	for( size_t i = 1; i < track.size(); ++i )
+	{
+		if( track[ i ].first < frame )
+			continue;
+		const float span = static_cast< float >( track[ i ].first - track[ i - 1 ].first );
+		const float t    = span > 0.0f ? ( frame - track[ i - 1 ].first ) / span : 0.0f;
+		return track[ i - 1 ].second + ( track[ i ].second - track[ i - 1 ].second ) * t;
+	}
+	return track.back().second;
+}
+
+/// The most recent cue at or before `frame`; the first cue's value before it.
+float stepAt( const Track& track, int frame )
+{
+	if( track.empty() )
+		return 0.0f;
+	float value = track.front().second;
+	for( const auto& cue : track )
+	{
+		if( cue.first > frame )
+			break;
+		value = cue.second;
+	}
+	return value;
+}
+
+/// True if the track has a cue >= 0.5 on exactly this frame.
+bool pressedAt( const Track& track, int frame )
+{
+	for( const auto& cue : track )
+		if( cue.first == frame && cue.second >= 0.5f )
+			return true;
+	return false;
+}
+
+/// The spectrum --pipe hands over: silence, or on an Onset cue's frame the
+/// same loud, sloped spectrum `--onset` hits the detector with. From silence
+/// that is a flux of about 0.8 against a floor of 0.004, which fires on any
+/// frame but the first (the detector is PRIMED on frame 0, so nothing there
+/// has risen from anything) and any within five frames of the last onset
+/// (its refractory period).
+void pipeSpectrum( std::vector< float >& spectrum, bool hit )
+{
+	for( int bin = 0; bin < audio::kBins; ++bin )
+		spectrum[ bin ] = hit ? 0.8f * ( 1.0f - 0.5f * bin / audio::kBins ) : 0.0f;
+}
+
+bool readExactly( unsigned char* data, size_t bytes, size_t& got )
+{
+	got = 0;
+	while( got < bytes )
+	{
+		const ssize_t n = read( STDIN_FILENO, data + got, bytes - got );
+		if( n < 0 && errno == EINTR )
+			continue;
+		if( n <= 0 )
+			return false;
+		got += static_cast< size_t >( n );
+	}
+	return true;
+}
+
+bool writeExactly( const unsigned char* data, size_t bytes )
+{
+	size_t written = 0;
+	while( written < bytes )
+	{
+		const ssize_t n = write( STDOUT_FILENO, data + written, bytes - written );
+		if( n < 0 && errno == EINTR )
+			continue;
+		if( n <= 0 )
+			return false;
+		written += static_cast< size_t >( n );
+	}
+	return true;
+}
+
+/// Frame numbers, run-length joined for a log line: "0,30,60" or "24-40".
+std::string frameList( const std::vector< int >& v )
+{
+	if( v.empty() )
+		return "-";
+	std::string s;
+	size_t i = 0;
+	int shown = 0;
+	while( i < v.size() )
+	{
+		size_t j = i;
+		while( j + 1 < v.size() && v[ j + 1 ] == v[ j ] + 1 )
+			++j;
+		if( shown++ == 24 )
+		{
+			s += ",...";
+			break;
+		}
+		s += ( s.empty() ? "" : "," ) + std::to_string( v[ i ] );
+		if( j > i )
+			s += "-" + std::to_string( v[ j ] );
+		i = j + 1;
+	}
+	return s;
+}
+
+/**
+	--pipe: raw RGBA frames on stdin, the plugin's output as raw RGBA frames on
+	stdout, until stdin ends. Nothing but frames goes to stdout; everything
+	else goes to stderr.
+
+	The clock is synthetic: frame n is SetTime( n * 1000 / fps ), in
+	milliseconds, as a double computed from the frame number -- never an
+	accumulated float -- so a long take cannot drift and a float cannot run
+	out of resolution. The plugin reads it for one log line and nothing else;
+	the codec counts frames.
+
+	**A partial frame at the end is the end of the stream, not a frame.** Half
+	a frame of garbage through a codec is a reference every later P-frame
+	predicts from.
+*/
+int runPipe( int width, int height, double fps, const std::string& scriptPath,
+             const std::vector< std::pair< std::string, float > >& settings )
+{
+	std::map< std::string, Track > tracks;
+	if( !scriptPath.empty() )
+	{
+		std::string error;
+		tracks = loadScript( scriptPath, error );
+		if( !error.empty() )
+		{
+			std::fprintf( stderr, "rstest: %s\n", error.c_str() );
+			return 2;
+		}
+	}
+
+	Rig rig;
+	rig.fps       = fps;
+	rig.timeScale = 1000.0;
+	if( !rig.begin( width, height ) )
+		return 1;
+	for( const auto& s : settings )
+		if( !rig.set( s.first, s.second ) )
+			return 2;
+
+	//Resolve every name against the plugin itself, before a frame is read.
+	struct Bound
+	{
+		unsigned int index;
+		FFUInt32 type;
+		const Track* track;
+	};
+	std::vector< Bound > bound;
+	const Track* onsetTrack = nullptr;
+	for( const auto& entry : tracks )
+	{
+		if( entry.first == kOnsetCue )
+		{
+			onsetTrack = &entry.second;
+			continue;
+		}
+
+		unsigned int index = Residual::PT_COUNT;
+		for( const NamedParameter& p : listParameters( rig.plugin ) )
+			if( p.name == entry.first )
+				index = p.index;
+
+		if( index >= Residual::PT_COUNT )
+		{
+			std::fprintf( stderr, "rstest: the script names '%s', which is not a parameter (try --list)\n",
+			              entry.first.c_str() );
+			return 2;
+		}
+		if( index >= Residual::PT_ABOUT_FIRST )
+		{
+			std::fprintf( stderr, "rstest: '%s' is in the About block, which opens a browser; not scriptable\n",
+			              entry.first.c_str() );
+			return 2;
+		}
+		if( index == Residual::PT_AUDIO )
+		{
+			std::fprintf( stderr, "rstest: Audio is a spectrum, not a number; cue '%s' instead\n", kOnsetCue );
+			return 2;
+		}
+		bound.push_back( Bound { index, rig.plugin.GetParamType( index ), &entry.second } );
+	}
+
+	std::signal( SIGPIPE, SIG_IGN );//a closed reader is a short write, reported
+
+	const size_t frameBytes = static_cast< size_t >( width ) * height * 4;
+	std::vector< unsigned char > incoming( frameBytes );
+	std::vector< int > intraAt, droppedAt, cutsAt, onsetsAt, refreshAt;
+
+	int index = 0;
+	for( ;; ++index )
+	{
+		size_t got = 0;
+		if( !readExactly( incoming.data(), frameBytes, got ) )
+		{
+			if( got > 0 )
+				std::fprintf( stderr, "rstest: %zu bytes at the end are not a whole %dx%d frame; ignored\n", got,
+				              width, height );
+			break;
+		}
+
+		//Applied through the plugin's own setter, so a cue moves exactly what
+		//an operator's control would.
+		for( const Bound& b : bound )
+		{
+			switch( b.type )
+			{
+			case FF_TYPE_EVENT:
+				if( pressedAt( *b.track, index ) )
+				{
+					rig.plugin.SetFloatParameter( b.index, 1.0f );
+					rig.plugin.SetFloatParameter( b.index, 0.0f );
+					refreshAt.push_back( index );
+				}
+				break;
+			case FF_TYPE_OPTION:
+			case FF_TYPE_BOOLEAN:
+				rig.plugin.SetFloatParameter( b.index, stepAt( *b.track, index ) );
+				break;
+			default:
+				rig.plugin.SetFloatParameter( b.index, rampAt( *b.track, index ) );
+				break;
+			}
+		}
+		pipeSpectrum( rig.spectrum, onsetTrack != nullptr && pressedAt( *onsetTrack, index ) );
+
+		//A raw frame arrives top row first; GL, the plugin and every other
+		//picture in this file keep row 0 at the bottom.
+		if( !rig.frame( index, flipRows( incoming, width, height ) ) )
+		{
+			std::fprintf( stderr, "rstest: ProcessOpenGL failed on frame %d\n", index );
+			return 1;
+		}
+
+		if( rig.plugin.LastFrameIntraForTest() )
+			intraAt.push_back( index );
+		if( rig.plugin.LastFrameDroppedForTest() )
+			droppedAt.push_back( index );
+		if( rig.plugin.LastSceneCutForTest() )
+			cutsAt.push_back( index );
+		if( rig.plugin.OnsetForTest().Fired() )
+			onsetsAt.push_back( index );
+
+		const Frame out = flipRows( rig.readOutput(), width, height );
+		if( !writeExactly( out.data(), out.size() ) )
+		{
+			std::fprintf( stderr, "rstest: short write on frame %d (the reader went away)\n", index );
+			return 1;
+		}
+	}
+
+	//What the codec did, on stderr, so a take can be checked against its cue
+	//sheet without looking at it.
+	std::fprintf( stderr,
+	              "rstest: %d frames at %dx%d; I-frames %s; dropped %s; scene cuts %s; refresh %s; onsets %s\n",
+	              index, width, height, frameList( intraAt ).c_str(), frameList( droppedAt ).c_str(),
+	              frameList( cutsAt ).c_str(), frameList( refreshAt ).c_str(), frameList( onsetsAt ).c_str() );
+	return 0;
+}
+
+//---------------------------------------------------------------------------
 void usage()
 {
 	std::printf(
@@ -1839,6 +2238,12 @@ void usage()
 		"  --onset           the first onset after a clip trigger drops an I-frame\n"
 		"  --negative        every check above can actually fail\n"
 		"  --bench           time ProcessOpenGL at 720p, 1080p and 4K\n"
+		"\n"
+		"  --pipe            raw RGBA frames on stdin, raw RGBA frames on stdout, at --size;\n"
+		"                    --fps drives the synthetic clock (SetTime in ms), --set applies first\n"
+		"  --script PATH     cues for --pipe: 'frame Name value' per line, in host units\n"
+		"                    (0..1 floats, integer counts, option index, 1 = press); 'Onset'\n"
+		"                    injects one loud spectrum frame\n"
 		"  --help\n" );
 }
 
@@ -1888,6 +2293,8 @@ int main( int argc, char** argv )
 	bool wantOnset     = false;
 	bool wantNegative  = false;
 	bool wantBench     = false;
+	bool wantPipe      = false;
+	std::string scriptPath;
 
 	std::vector< std::string > settings;
 
@@ -1945,6 +2352,10 @@ int main( int argc, char** argv )
 			wantNegative = true;
 		else if( argument == "--bench" )
 			wantBench = true;
+		else if( argument == "--pipe" )
+			wantPipe = true;
+		else if( argument == "--script" && hasNext )
+			scriptPath = argv[ ++i ];
 		else
 		{
 			std::fprintf( stderr, "unknown argument: %s\n", argument.c_str() );
@@ -2038,6 +2449,14 @@ int main( int argc, char** argv )
 
 	if( wantBench )
 		return finish( runBench( frames, parsed ) );
+
+	if( wantPipe )
+		return finish( runPipe( width, height, fps, scriptPath, parsed ) );
+	if( !scriptPath.empty() )
+	{
+		std::fprintf( stderr, "--script only means something with --pipe\n" );
+		return finish( 2 );
+	}
 
 	//--list and --out both need a plugin instance.
 	Rig rig;
