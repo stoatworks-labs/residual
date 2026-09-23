@@ -47,7 +47,8 @@ controls with one of them set to a value no encoder would choose.
 
 4:2:0 chroma subsampling (Co and Cg are coded at full resolution with their own
 quantiser — the chroma-block look of a real mosh is a v0.2), B-frames, a
-deblocking filter, rate control, presets, OFX, a browser demo.
+deblocking filter, rate control, presets, OFX. (A browser demo did arrive, on
+2026-09-24 — see the end of this file.)
 
 ---
 
@@ -484,7 +485,8 @@ depends on and the others do not. Reverted; nothing left behind.
 - **The 2× coarse window is judged on synthetic textures.** On real footage a
   hierarchical search is a heuristic and can still pick a wrong local minimum;
   that is a property of every encoder, and a datamosh does not mind.
-- **No 4:2:0, no presets, no OFX, no browser demo.** See the decisions above.
+- **No 4:2:0, no presets, no OFX.** See the decisions above. The browser demo's
+  CPU half is a hand port that only a reader checks.
 
 ---
 
@@ -523,3 +525,42 @@ ceil( W / B )`) is what lets one vector texture shape serve every level, and
 is the closest thing here to macroblock's "the lattice must partition the
 axis". Cross-cutting fleet knowledge lives in
 [fleet-notes](https://github.com/stoatworks-labs/fleet-notes).
+
+## The browser demo, 2026-09-24
+
+- **The whole codec runs in the page.** Every pass, every frame, from the plugin's
+  own GLSL: copy, luma, the four-level luma pyramid, the chunked SAD and select
+  at every level with the half-pel refinement, the SAD sum and its synchronous
+  readback, predict, the four DCT passes and the composite — twenty-three programs,
+  six motion variants each of SAD and select among them. Integer textures work in WebGL2
+  exactly as the plugin uses them (RGBA8UI, R8UI, RGBA32I, R32I, R32UI, all
+  renderable), so nothing had to be approximated. The CPU half — `decideIntra`, the
+  Drop I latch, Vector Hold, the chunk/ping-pong schedule, the conversions — is a
+  port that only a reader checks.
+- **Two sampler bindings differ, and no pixel can.** The plugin binds something to
+  every sampler on every pass, and twice that something is the pass's own render
+  target: `Coarse` at the coarsest level of a 32-pixel block (`vectors[min(l+1,3)]`
+  is `vectors[3]`, which is the target), and `Previous` on the first chunk of a
+  half-pel level-0 search (the target is the scratch buffer, and so is the
+  fallback). Desktop GL tolerates a feedback loop the shader never samples; WebGL2
+  rejects the draw with INVALID_OPERATION and the frame silently loses a pass. The
+  page binds a 1×1 RGBA32I dummy in exactly those cases (`safe()` in plugin.js).
+  Both are behind `HasCoarse == 0` / `HasPrevious == 0`, so the shader never reads
+  it. Checked headless at Block Size 32 with Half Pel on: no WebGL warnings.
+- **The page makes its own cuts.** A datamosh is what a decoder does at a cut, and
+  none of the kit's generated clips cut. So by default the page swaps the input for
+  colour bars every other three seconds — its own switch, disclosed in the banner,
+  the disclosure and the transport, and off under Cuts = "Only when you change the
+  clip". The alternative, inventing a cut inside a generated clip, would have been
+  the same intervention hidden inside the source.
+- **Drop I lists On Onset, and nothing arms it.** The plugin declares it, so the
+  page does; the audio side is absent and the option behaves as Off.
+- **Refresh is a toggle the renderer releases; Search Range, GOP and Vector Hold
+  are sliders** over their integer ranges.
+- **The readout line under the picture is the page's**: frame type, mean SAD,
+  counts of I-frames, dropped I-frames and detected scene cuts. It reads the port's
+  own decisions and draws nothing into the picture.
+- Verified 2026-09-24 in headless Chrome (Metal): renders, no console errors and no
+  WebGL warnings at Block Size 16 and 32, Half Pel on and off; with Drop I All and
+  Residual Gain 0 the mosh holds the old picture across the cut, and moving Mix or
+  Show Vectors with the transport paused changes the picture.

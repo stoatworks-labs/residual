@@ -102,6 +102,21 @@ so the footage is rendered by this repository's own offline harness
 (`rstest --pipe`, driven by a cue sheet) rather than filmed off a screen, and
 the clips are Resolume's bundled demo media.*
 
+## Try it in your browser
+
+**<https://residual-demo.stoatworks-labs.com>**
+
+Not the plugin — but the whole codec, from the plugin's own GLSL: the fifteen shader
+pieces in `source/Shaders.cpp`, copied across unedited and assembled exactly as
+`shaders::assemble()` does, running every pass in WebGL2 — motion search at every
+pyramid level, prediction, the four DCT passes, the reconstruction. The small CPU half
+(the frame-type decision, the Drop I latch, Vector Hold, the search schedule) is a hand
+port that nothing but a reader checks; `demo/tools/check_shaders.py`, run by
+`tools/verify.sh`, fails if a character of the shaders drifts. There is no audio in a
+browser, so Drop I's On Onset never arms there, and because the generated clips never
+cut, the page cuts to colour bars every three seconds by itself (a switch in its
+transport turns that off). The page lists every difference at its foot.
+
 ## Controls
 
 **Encoder** — the codec as an encoder would build it.
@@ -201,7 +216,9 @@ lossless" is a bitwise claim and not a tolerance.
   Hold, held vectors carry the SAD of the frame they were found on, which says nothing
   about this one.
 - **Alpha is not coded.** The decoded frame carries the current source's alpha through.
-- No factory presets. No OpenFX port, no browser demo — neither is required for 0.1.0.
+- No factory presets. No OpenFX port — not required for 0.1.0. The
+  [browser demo](https://residual-demo.stoatworks-labs.com) runs the whole codec from the
+  plugin's own shaders; its small CPU half is a hand port only a reader checks.
 - The user guide is [docs/USER-GUIDE.md](docs/USER-GUIDE.md); the About block's fourth
   button opens it.
 

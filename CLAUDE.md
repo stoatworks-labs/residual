@@ -109,7 +109,7 @@ Each check, one line each:
   Search Range, Half Pel, Scene Cut, Scene Threshold and Drop I dead on the gate's
   still picture, and `tools/sweep.py` proves them live.
 - No 4:2:0 chroma subsampling (Co/Cg are coded at full resolution with their own
-  quantiser), no B-frames, no factory presets, no OpenFX port, no browser demo.
+  quantiser), no B-frames, no factory presets, no OpenFX port. The browser demo is below.
 - Never run on Intel. CI runs the nine suites and the sweep on GitHub's GPU-less
   macOS runner (Apple's software rasteriser), green; the plugin also rendered on
   llvmpipe in the Arena gate.
@@ -125,3 +125,28 @@ Resolume).
 It records the build, the GL driver, which shader failed to compile if one did,
 every resize (which restarts the GOP), and at frame 60 the host's clock, the
 block grid and the motion-compensated SAD.
+
+## Browser demo
+
+`demo/` is a static page at **residual-demo.stoatworks-labs.com**, deployed by
+`cf-run npx wrangler deploy` from the repo root (`wrangler.toml`, a
+static-assets-only Worker — no build step, no Pages, no `_redirects`).
+
+- `demo/vendor/` is vendored from
+  `infrastructure/stoatworks-backend/resolume-demo/kit/` and is **not** a place
+  to edit. Re-sync with
+  `~/Projects/infrastructure/stoatworks-backend/resolume-demo/sync.sh residual`
+  and confirm it says `synced residual` rather than skipping.
+- The fifteen shader pieces in `demo/plugin.js` (`kVertexShader`, `kCommon`,
+  thirteen bodies) are `source/Shaders.cpp` verbatim, assembled by
+  `assemble()` / `assembleMotion()` exactly as the C++ does, and
+  `demo/tools/check_shaders.py` (run by `verify.sh`) fails on a single
+  character of drift.
+- **Everything else in `demo/plugin.js` is a hand port** of `Controls.cpp`,
+  `quantStep`/`dctBasis`/the lattice helpers, `searchLevel`'s chunk schedule,
+  `decideIntra`, the Drop I latch and Vector Hold, and **nothing checks it but
+  a reader.**
+- The page binds a 1×1 RGBA32I dummy where the plugin binds a pass's own render
+  target to a sampler the pass has switched off (WebGL2 refuses the feedback
+  loop). The page cuts to colour bars every 3 s by itself (transport: Cuts).
+  Absent and said so: `Audio`/`Onset.cpp`, the About block.
