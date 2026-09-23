@@ -1732,7 +1732,8 @@ int runNegative()
 //---------------------------------------------------------------------------
 // --bench
 //---------------------------------------------------------------------------
-double benchAt( int width, int height, int frames, const std::vector< std::pair< std::string, float > >& settings )
+double benchAt( int width, int height, int frames, const std::vector< std::pair< std::string, float > >& settings,
+                bool readback )
 {
 	Rig rig;
 	if( !rig.begin( width, height ) )
@@ -1740,6 +1741,7 @@ double benchAt( int width, int height, int frames, const std::vector< std::pair<
 
 	for( const auto& s : settings )
 		rig.set( s.first, s.second );
+	rig.plugin.SetReadbackForTest( readback );
 
 	//Moving content, so the search has something to find and the scene-cut
 	//readback happens every frame, as it would in a show.
@@ -1796,17 +1798,19 @@ int runBench( int frames, const std::vector< std::pair< std::string, float > >& 
 	std::printf( "block %d, search range +-%d, half-pel %s, %d pyramid levels.\n\n",
 	             codec::kBlockSizes[ std::clamp( blockOption, 0, 2 ) ], range, halfPel ? "on" : "off",
 	             codec::levelsFor( codec::kBlockSizes[ std::clamp( blockOption, 0, 2 ) ] ) );
-	std::printf( "resolution    ms/frame   equivalent fps   %% of a 60fps frame\n" );
+	std::printf( "resolution    ms/frame   equivalent fps   %% of a 60fps frame   without the readback\n" );
 
 	for( const Size& s : sizes )
 	{
-		const double ms = benchAt( s.width, s.height, frames, settings );
-		std::printf( "%s    %7.3f       %8.0f            %5.1f%%\n", s.name, ms, ms > 0.0 ? 1000.0 / ms : 0.0,
-		             ms / 16.667 * 100.0 );
+		const double ms   = benchAt( s.width, s.height, frames, settings, true );
+		const double noRb = benchAt( s.width, s.height, frames, settings, false );
+		std::printf( "%s    %7.3f       %8.0f            %5.1f%%          %7.3f\n", s.name, ms,
+		             ms > 0.0 ? 1000.0 / ms : 0.0, ms / 16.667 * 100.0, noRb );
 	}
 
 	std::printf( "\nThe cost is the motion search plus a one-uint readback per frame for the\n"
-	             "scene-cut decision, which is a CPU-GPU synchronisation point. Run with\n"
+	             "scene-cut decision, which is a CPU-GPU synchronisation point; the last\n"
+	             "column is the same frame with that readback skipped. Run with\n"
 	             "--set \"Block Size=0\" --set \"Search Range=32\" for the most expensive search.\n" );
 	return 0;
 }

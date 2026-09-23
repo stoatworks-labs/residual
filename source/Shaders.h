@@ -19,11 +19,13 @@
 	                code, so an 8-bit host texture arrives exactly.
 	 2. luma        source -> R8UI Y, the codec's own luma (YCoCg-R).
 	 3. downsample  Y level l-1 -> level l, 2x2 means, up to three times.
-	 4. motion      one fragment per BLOCK, per level, coarsest first. A full
-	                search at the coarsest level, a +-2 window around the
-	                doubled coarse vector below it, and at level 0 a half-pel
-	                refinement of the winner. SAD on luma. Equal SADs prefer the
-	                smaller vector, zero first.
+	 4. motionSad,  per level, coarsest first: one fragment per (block,
+	    motionSelect candidate) writes a SAD, then one fragment per block keeps
+	                the best. A full search at the coarsest level, in 9x9
+	                candidate chunks; a +-2 window around the doubled coarse
+	                vector below it; and at level 0 a half-pel refinement of
+	                the winner. SAD on luma. Equal SADs prefer the smaller
+	                vector, zero first.
 	 5. sadRows,    the per-block SADs of the chosen vectors summed into one
 	    sadTotal    number, read back by the CPU for the scene-cut decision.
 	 6. predict     the reference (last DECODED frame) block-copied by the
@@ -56,7 +58,8 @@ extern const char* const kCommon;
 extern const char* const kCopyBody;
 extern const char* const kLumaBody;
 extern const char* const kDownsampleBody;
-extern const char* const kMotionBody;
+extern const char* const kMotionSadBody;
+extern const char* const kMotionSelectBody;
 extern const char* const kSadRowsBody;
 extern const char* const kSadTotalBody;
 extern const char* const kPredictBody;
@@ -68,5 +71,11 @@ extern const char* const kCompositeBody;
 
 /// `#version 410 core` + kCommon + body.
 std::string assemble( const char* body );
+
+/// A motion shader (kMotionSadBody or kMotionSelectBody) for one (block,
+/// pad) pair: `#version`, `#define BLOCK`, `#define PAD`, kCommon, body. One
+/// program per pair, because the SAD loops have to have constant bounds to
+/// run at any speed.
+std::string assembleMotion( const char* body, int block, int pad );
 
 } // namespace residual::shaders

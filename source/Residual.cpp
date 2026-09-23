@@ -62,6 +62,31 @@ void bindTexture( int unit, GLuint texture )
 	glActiveTexture( GL_TEXTURE0 + unit );
 	glBindTexture( GL_TEXTURE_2D, texture );
 }
+
+/// The (block, pad) pairs the motion search is compiled for. Level 0 matches
+/// the block it codes; every coarser level matches a window half a block
+/// wider on each side. 8 -> 4; 16 -> 8 -> 4; 32 -> 16 -> 8 -> 4.
+struct MotionVariant
+{
+	int block;
+	int pad;
+};
+constexpr MotionVariant kMotionVariants[ 6 ] = {
+	{ 8, 0 }, { 16, 0 }, { 32, 0 }, { 4, 2 }, { 8, 4 }, { 16, 8 },
+};
+
+int motionVariantFor( int block, int pad )
+{
+	for( int i = 0; i < 6; ++i )
+		if( kMotionVariants[ i ].block == block && kMotionVariants[ i ].pad == pad )
+			return i;
+	return -1;
+}
+
+/// Candidates per block along each axis of the SAD buffer. 9 covers the
+/// +-2 refinement window (5) and one coarse search up to +-4 in a single
+/// pass; wider coarse searches take several chunks, merged.
+constexpr int kChunkSide = 9;
 } // namespace
 
 //---------------------------------------------------------------------------
@@ -200,7 +225,6 @@ FFResult Residual::InitGL( const FFGLViewportStruct* vp )
 		{ &copyShader, shaders::kCopyBody, "copy" },
 		{ &lumaShader, shaders::kLumaBody, "luma" },
 		{ &downsampleShader, shaders::kDownsampleBody, "downsample" },
-		{ &motionShader, shaders::kMotionBody, "motion" },
 		{ &sadRowsShader, shaders::kSadRowsBody, "sadRows" },
 		{ &sadTotalShader, shaders::kSadTotalBody, "sadTotal" },
 		{ &predictShader, shaders::kPredictBody, "predict" },
@@ -222,6 +246,24 @@ FFResult Residual::InitGL( const FFGLViewportStruct* vp )
 		//lines are the only record of which pass it was.
 		diag::error( std::string( "the " ) + stage.name
 		             + " shader failed to compile - the effect will do nothing" );
+		FFGLLog::LogToHost( "Residual: shader failed to compile" );
+		DeInitGL();
+		return FF_FAIL;
+	}
+
+	for( int i = 0; i < 6; ++i )
+	{
+		const std::string sad = shaders::assembleMotion( shaders::kMotionSadBody, kMotionVariants[ i ].block,
+		                                                 kMotionVariants[ i ].pad );
+		const std::string select = shaders::assembleMotion( shaders::kMotionSelectBody, kMotionVariants[ i ].block,
+		                                                    kMotionVariants[ i ].pad );
+		if( motionSadShaders[ i ].Compile( shaders::kVertexShader, sad.c_str() )
+		    && motionSelectShaders[ i ].Compile( shaders::kVertexShader, select.c_str() ) )
+			continue;
+
+		diag::error( "a motion shader for block " + std::to_string( kMotionVariants[ i ].block ) + " pad "
+		             + std::to_string( kMotionVariants[ i ].pad )
+		             + " failed to compile - the effect will do nothing" );
 		FFGLLog::LogToHost( "Residual: shader failed to compile" );
 		DeInitGL();
 		return FF_FAIL;
@@ -291,6 +333,13 @@ bool Residual::ensureBuffers( int width, int height, int blockSize, int levels, 
 			holdRemaining = 0;
 	}
 	(void)levels;
+	if( !vectorsScratch.Ensure( bx, by, GL_RGBA32I ) )
+		return false;
+	//9x the block grid: one 9x9 chunk of candidates per block, shared by
+	//every level and every chunk pass. 4 bytes each, so 42 MB at 4K with
+	//8-pixel blocks and a tenth of that with 16.
+	if( !sads.Ensure( bx * kChunkSide, by * kChunkSide, GL_R32I ) )
+		return false;
 	blocksX      = bx;
 	blocksY      = by;
 	blockSizeWas = blockSize;
@@ -308,6 +357,152 @@ bool Residual::ensureBuffers( int width, int height, int blockSize, int levels, 
 		return false;
 
 	return true;
+}
+
+//---------------------------------------------------------------------------
+void Residual::searchLevel( int level, int levels, int blockSize, int range, bool halfPel, int cur, int prv )
+{
+	const int levelBlock = blockSize >> level;
+	//Level 0 matches the block it codes. Every coarser level matches a
+	//window twice the block, centred on it -- see the shader.
+	const int levelPad   = level == 0 ? 0 : levelBlock / 2;
+	const int variant    = motionVariantFor( levelBlock, levelPad );
+	FFGLShader& sadShader    = motionSadShaders[ variant ];
+	FFGLShader& selectShader = motionSelectShaders[ variant ];
+
+	const bool coarsest  = level == levels - 1;
+	const int levelRange = codec::rangeAtLevel( range, level );
+	const int window     = coarsest ? levelRange : codec::kRefineWindow;
+	const int side       = 2 * window + 1;
+	const int chunks     = ( side + kChunkSide - 1 ) / kChunkSide;
+	const int passes     = chunks * chunks;
+
+	const int imageW = pyramid[ cur ][ level ].Width();
+	const int imageH = pyramid[ cur ][ level ].Height();
+
+	//Where the whole-pel result has to land. With a half-pel refinement to
+	//follow it lands in the scratch buffer and the refinement writes the
+	//real one; otherwise it lands in the real one directly. The chunk merge
+	//ping-pongs between the two, so the FIRST pass's target is chosen so
+	//that the last one lands where it should.
+	const bool refine    = level == 0 && halfPel;
+	Buffer* landing      = refine ? &vectorsScratch : &vectors[ level ];
+	Buffer* other        = refine ? &vectors[ level ] : &vectorsScratch;
+	Buffer* previous     = nullptr;
+
+	for( int pass = 0; pass < passes; ++pass )
+	{
+		const int cx           = pass % chunks;
+		const int cy           = pass / chunks;
+		const int offsetX      = -window + cx * kChunkSide;
+		const int offsetY      = -window + cy * kChunkSide;
+		const bool last        = pass == passes - 1;
+		Buffer* target         = last ? landing : ( ( ( passes - 1 - pass ) % 2 == 0 ) ? landing : other );
+
+		//The SAD of every candidate in this chunk, one fragment each.
+		{
+			sads.BindAsTarget();
+			glViewport( 0, 0, blocksX * kChunkSide, blocksY * kChunkSide );
+			ScopedShaderBinding shader( sadShader.GetGLID() );
+			bindTexture( 0, pyramid[ cur ][ level ].Texture() );
+			bindTexture( 1, pyramid[ prv ][ level ].Texture() );
+			bindTexture( 2, vectors[ std::min( level + 1, codec::kMaxLevels - 1 ) ].Texture() );
+			bindTexture( 3, vectorsScratch.Texture() );
+			sadShader.Set( "Cur", 0 );
+			sadShader.Set( "Prev", 1 );
+			sadShader.Set( "Coarse", 2 );
+			sadShader.Set( "Selected", 3 );
+			sadShader.Set( "HasCoarse", coarsest ? 0 : 1 );
+			setIVec2( sadShader, "ImageSize", imageW, imageH );
+			sadShader.Set( "Range", levelRange );
+			sadShader.Set( "Window", window );
+			sadShader.Set( "ChunkSide", kChunkSide );
+			setIVec2( sadShader, "ChunkOffset", offsetX, offsetY );
+			sadShader.Set( "HalfPelMode", 0 );
+			quad.Draw();
+		}
+
+		//The best so far, one fragment per block.
+		{
+			target->BindAsTarget();
+			ScopedShaderBinding shader( selectShader.GetGLID() );
+			bindTexture( 0, pyramid[ cur ][ level ].Texture() );
+			bindTexture( 1, pyramid[ prv ][ level ].Texture() );
+			bindTexture( 2, sads.Texture() );
+			bindTexture( 3, vectors[ std::min( level + 1, codec::kMaxLevels - 1 ) ].Texture() );
+			//An inactive sampler still has to point at SOMETHING integer, or
+			//the driver logs about an incomplete texture on every frame.
+			bindTexture( 4, previous ? previous->Texture() : vectorsScratch.Texture() );
+			selectShader.Set( "Cur", 0 );
+			selectShader.Set( "Prev", 1 );
+			selectShader.Set( "Sads", 2 );
+			selectShader.Set( "Coarse", 3 );
+			selectShader.Set( "Previous", 4 );
+			selectShader.Set( "HasCoarse", coarsest ? 0 : 1 );
+			selectShader.Set( "HasPrevious", previous ? 1 : 0 );
+			setIVec2( selectShader, "ImageSize", imageW, imageH );
+			selectShader.Set( "Range", levelRange );
+			selectShader.Set( "ChunkSide", kChunkSide );
+			setIVec2( selectShader, "ChunkOffset", offsetX, offsetY );
+			selectShader.Set( "TieBreak", tieBreakForTest ? 1 : 0 );
+			selectShader.Set( "HalfPelMode", 0 );
+			selectShader.Set( "OutputHalfPel", ( level == 0 && !refine ) ? 1 : 0 );
+			quad.Draw();
+		}
+
+		previous = target;
+	}
+
+	if( !refine )
+		return;
+
+	//The eight half-pel neighbours of the whole-pel winner, then the merge
+	//that writes the level's real result in half-pel units.
+	{
+		sads.BindAsTarget();
+		glViewport( 0, 0, blocksX * 3, blocksY * 3 );
+		ScopedShaderBinding shader( sadShader.GetGLID() );
+		bindTexture( 0, pyramid[ cur ][ level ].Texture() );
+		bindTexture( 1, pyramid[ prv ][ level ].Texture() );
+		bindTexture( 2, vectors[ 1 ].Texture() );
+		bindTexture( 3, vectorsScratch.Texture() );
+		sadShader.Set( "Cur", 0 );
+		sadShader.Set( "Prev", 1 );
+		sadShader.Set( "Coarse", 2 );
+		sadShader.Set( "Selected", 3 );
+		sadShader.Set( "HasCoarse", 0 );
+		setIVec2( sadShader, "ImageSize", imageW, imageH );
+		sadShader.Set( "Range", levelRange );
+		sadShader.Set( "Window", 1 );
+		sadShader.Set( "ChunkSide", 3 );
+		setIVec2( sadShader, "ChunkOffset", -1, -1 );
+		sadShader.Set( "HalfPelMode", 1 );
+		quad.Draw();
+	}
+	{
+		vectors[ 0 ].BindAsTarget();
+		ScopedShaderBinding shader( selectShader.GetGLID() );
+		bindTexture( 0, pyramid[ cur ][ level ].Texture() );
+		bindTexture( 1, pyramid[ prv ][ level ].Texture() );
+		bindTexture( 2, sads.Texture() );
+		bindTexture( 3, vectors[ 1 ].Texture() );
+		bindTexture( 4, vectorsScratch.Texture() );
+		selectShader.Set( "Cur", 0 );
+		selectShader.Set( "Prev", 1 );
+		selectShader.Set( "Sads", 2 );
+		selectShader.Set( "Coarse", 3 );
+		selectShader.Set( "Previous", 4 );
+		selectShader.Set( "HasCoarse", 0 );
+		selectShader.Set( "HasPrevious", 1 );
+		setIVec2( selectShader, "ImageSize", imageW, imageH );
+		selectShader.Set( "Range", levelRange );
+		selectShader.Set( "ChunkSide", 3 );
+		setIVec2( selectShader, "ChunkOffset", -1, -1 );
+		selectShader.Set( "TieBreak", tieBreakForTest ? 1 : 0 );
+		selectShader.Set( "HalfPelMode", 1 );
+		selectShader.Set( "OutputHalfPel", 1 );
+		quad.Draw();
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -483,34 +678,7 @@ FFResult Residual::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	if( estimate )
 	{
 		for( int l = levels - 1; l >= 0; --l )
-		{
-			vectors[ l ].BindAsTarget();
-			ScopedShaderBinding shader( motionShader.GetGLID() );
-			bindTexture( 0, pyramid[ cur ][ l ].Texture() );
-			bindTexture( 1, pyramid[ prv ][ l ].Texture() );
-			//An inactive sampler still has to point at SOMETHING integer, or
-			//the driver logs about an incomplete texture on every frame.
-			bindTexture( 2, vectors[ std::min( l + 1, codec::kMaxLevels - 1 ) ].Texture() );
-
-			const bool coarsest = l == levels - 1;
-			const int levelRange = codec::rangeAtLevel( range, l );
-
-			motionShader.Set( "Cur", 0 );
-			motionShader.Set( "Prev", 1 );
-			motionShader.Set( "Coarse", 2 );
-			motionShader.Set( "HasCoarse", coarsest ? 0 : 1 );
-			setIVec2( motionShader, "ImageSize", pyramid[ cur ][ l ].Width(), pyramid[ cur ][ l ].Height() );
-			motionShader.Set( "Block", blockSize >> l );
-			//Level 0 matches the block it codes. Every coarser level matches a
-			//window twice the block, centred on it -- see the shader.
-			motionShader.Set( "Pad", l == 0 ? 0 : ( blockSize >> l ) / 2 );
-			motionShader.Set( "Range", levelRange );
-			motionShader.Set( "Window", coarsest ? levelRange : codec::kRefineWindow );
-			motionShader.Set( "TieBreak", tieBreakForTest ? 1 : 0 );
-			motionShader.Set( "HalfPel", ( l == 0 && halfPel ) ? 1 : 0 );
-			motionShader.Set( "OutputHalfPel", l == 0 ? 1 : 0 );
-			quad.Draw();
-		}
+			searchLevel( l, levels, blockSize, range, halfPel, cur, prv );
 
 		//The SADs of the chosen vectors, summed to one number for the
 		//scene-cut decision. Two passes, so no fragment sums more than a row.
@@ -537,8 +705,11 @@ FFResult Residual::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		//number, rather than being split across the two sides a frame apart.
 		//The bench measures what it costs.
 		GLuint sum = 0;
-		glBindFramebuffer( GL_FRAMEBUFFER, sadTotal.Fbo() );
-		glReadPixels( 0, 0, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &sum );
+		if( readbackForTest )
+		{
+			glBindFramebuffer( GL_FRAMEBUFFER, sadTotal.Fbo() );
+			glReadPixels( 0, 0, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &sum );
+		}
 		meanSad = static_cast< double >( sum ) / ( static_cast< double >( width ) * height );
 
 		holdRemaining = hold - 1;
@@ -652,9 +823,8 @@ FFResult Residual::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		quad.Draw();
 	}
 
-	bindTexture( 2, 0 );
-	bindTexture( 1, 0 );
-	bindTexture( 0, 0 );
+	for( int unit = 4; unit >= 0; --unit )
+		bindTexture( unit, 0 );
 
 	referenceValid = true;
 
@@ -684,6 +854,8 @@ void Residual::releaseBuffers()
 	}
 	for( Buffer& b : vectors )
 		b.Destroy();
+	vectorsScratch.Destroy();
+	sads.Destroy();
 	predicted.Destroy();
 	sadRows.Destroy();
 	sadTotal.Destroy();
@@ -694,7 +866,10 @@ FFResult Residual::DeInitGL()
 	copyShader.FreeGLResources();
 	lumaShader.FreeGLResources();
 	downsampleShader.FreeGLResources();
-	motionShader.FreeGLResources();
+	for( FFGLShader& shader : motionSadShaders )
+		shader.FreeGLResources();
+	for( FFGLShader& shader : motionSelectShaders )
+		shader.FreeGLResources();
 	sadRowsShader.FreeGLResources();
 	sadTotalShader.FreeGLResources();
 	predictShader.FreeGLResources();

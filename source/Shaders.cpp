@@ -121,27 +121,44 @@ void main()
 )";
 
 //---------------------------------------------------------------------------
-// 4. motion -- one fragment per block, at one pyramid level.
+// 4. motion -- two passes per pyramid level.
+//
+// One fragment per BLOCK doing the whole search was measured at 23 ms for
+// level 0 of a 720p frame: 3600 threads each walking 6400 dependent
+// fetches, on a GPU that wants tens of thousands of short threads. So the
+// search is split. `motionSad` runs one fragment per (block, candidate) and
+// writes one SAD; `motionSelect` runs one fragment per block, reads its
+// candidates' SADs and keeps the best under the tie-break. Candidates come
+// in 9x9 chunks so the SAD buffer is 81 times the block grid whatever the
+// range, and a wide coarse search is several chunk passes merged through
+// the select pass's `Previous` input.
 //---------------------------------------------------------------------------
-const char* const kMotionBody = R"(
+const char* const kMotionSadBody = R"(
 uniform usampler2D Cur;    //this level's luma, current frame
 uniform usampler2D Prev;   //this level's luma, previous SOURCE frame
 uniform isampler2D Coarse; //the level above's vectors, whole level pixels
+uniform isampler2D Selected;//half-pel mode: this level's whole-pel winner
 uniform int HasCoarse;     //0 at the coarsest level
 uniform ivec2 ImageSize;   //this level's picture size
-uniform int Block;         //this level's block size
-uniform int Pad;           //extra pixels matched either side of the block (coarse levels)
 uniform int Range;         //this level's search range, whole pixels
 uniform int Window;        //half-width searched around the centre
-uniform int TieBreak;      //1: equal SADs prefer the smaller vector, zero first
-uniform int HalfPel;       //1: refine the winner to half-pel (level 0 only)
-uniform int OutputHalfPel; //1: write half-pel units (level 0 only)
+uniform int ChunkSide;     //candidates per block along each axis (9, or 3 for half-pel)
+uniform ivec2 ChunkOffset; //this chunk's first offset, relative to the centre
+uniform int HalfPelMode;   //1: the 3x3 half-pel neighbours of Selected
 
-out ivec4 fragColor;
+//BLOCK and PAD are #defined by assembleMotion(): one program per pair, so
+//the SAD loops have constant bounds.
 
-int lumaAt( usampler2D tex, ivec2 p )
+out int fragColor;
+
+int curAt( ivec2 p )
 {
-	return int( texelFetch( tex, clampTo( p, ImageSize ), 0 ).r );
+	return int( texelFetch( Cur, clampTo( p, ImageSize ), 0 ).r );
+}
+
+int prevAt( ivec2 p )
+{
+	return int( texelFetch( Prev, clampTo( p, ImageSize ), 0 ).r );
 }
 
 //The previous frame at p + hv / 2, hv in half-pel units. A whole-pel offset
@@ -149,15 +166,15 @@ int lumaAt( usampler2D tex, ivec2 p )
 int prevHalfAt( ivec2 p, ivec2 hv )
 {
 	ivec2 whole = ivec2( fd2( hv.x ), fd2( hv.y ) );
-	ivec2 base = p + whole;
-	ivec2 f    = hv - 2 * whole;
+	ivec2 base  = p + whole;
+	ivec2 f     = hv - 2 * whole;
 
-	int a = lumaAt( Prev, base );
+	int a = prevAt( base );
 	if( f.x == 0 && f.y == 0 )
 		return a;
-	int b = lumaAt( Prev, base + ivec2( 1, 0 ) );
-	int c = lumaAt( Prev, base + ivec2( 0, 1 ) );
-	int d = lumaAt( Prev, base + ivec2( 1, 1 ) );
+	int b = prevAt( base + ivec2( 1, 0 ) );
+	int c = prevAt( base + ivec2( 0, 1 ) );
+	int d = prevAt( base + ivec2( 1, 1 ) );
 	if( f.y == 0 )
 		return ( a + b + 1 ) >> 1; //= mirrored
 	if( f.x == 0 )
@@ -169,7 +186,7 @@ int prevHalfAt( ivec2 p, ivec2 hv )
 //that lie outside the picture are not counted, so a partial block at the
 //edge is judged on what it actually has.
 //
-//At the coarse levels the block is grown by Pad on every side, so a 4x4
+//At the coarse levels the block is grown by PAD on every side, so a 4x4
 //coarse cell is judged on 8x8 samples rather than 16. A cell that small on
 //a half-resolution picture is too few samples to find the right minimum
 //in: the fine level's window is only +-2, and a coarse pick two cells out
@@ -178,14 +195,14 @@ int prevHalfAt( ivec2 p, ivec2 hv )
 int sadAt( ivec2 origin, ivec2 v )
 {
 	int sad = 0;
-	for( int j = -Pad; j < Block + Pad; ++j )
+	for( int j = -PAD; j < BLOCK + PAD; ++j )
 	{
-		for( int i = -Pad; i < Block + Pad; ++i )
+		for( int i = -PAD; i < BLOCK + PAD; ++i )
 		{
 			ivec2 p = origin + ivec2( i, j );
 			if( p.x < 0 || p.y < 0 || p.x >= ImageSize.x || p.y >= ImageSize.y )
 				continue;
-			sad += abs( lumaAt( Cur, p ) - lumaAt( Prev, p + v ) );
+			sad += abs( curAt( p ) - prevAt( p + v ) );
 		}
 	}
 	return sad;
@@ -194,14 +211,106 @@ int sadAt( ivec2 origin, ivec2 v )
 int sadHalfAt( ivec2 origin, ivec2 hv )
 {
 	int sad = 0;
-	for( int j = 0; j < Block; ++j )
+	for( int j = 0; j < BLOCK; ++j )
 	{
-		for( int i = 0; i < Block; ++i )
+		for( int i = 0; i < BLOCK; ++i )
 		{
 			ivec2 p = origin + ivec2( i, j );
 			if( p.x >= ImageSize.x || p.y >= ImageSize.y )
 				continue;
-			sad += abs( lumaAt( Cur, p ) - prevHalfAt( p, hv ) );
+			sad += abs( curAt( p ) - prevHalfAt( p, hv ) );
+		}
+	}
+	return sad;
+}
+
+void main()
+{
+	ivec2 cell   = ivec2( gl_FragCoord.xy );
+	ivec2 block  = cell / ChunkSide;
+	ivec2 c      = cell - block * ChunkSide;
+	ivec2 origin = block * BLOCK;
+
+	if( HalfPelMode == 1 )
+	{
+		//The eight half-pel neighbours of the whole-pel winner; the centre
+		//cell is the winner itself and is not re-evaluated.
+		ivec2 h = c - 1;
+		if( h.x == 0 && h.y == 0 )
+		{
+			fragColor = -1;
+			return;
+		}
+		ivec2 hv = texelFetch( Selected, block, 0 ).xy * 2 + h;
+		if( abs( hv.x ) > 2 * Range || abs( hv.y ) > 2 * Range )
+		{
+			fragColor = -1;
+			return;
+		}
+		fragColor = sadHalfAt( origin, hv );
+		return;
+	}
+
+	//Where to search. The coarsest level searches the whole range around
+	//zero; every finer level searches a small window around the doubled
+	//coarse vector.
+	ivec2 centre = ivec2( 0 );
+	if( HasCoarse == 1 )
+		centre = clamp( texelFetch( Coarse, block, 0 ).xy * 2, ivec2( -Range ), ivec2( Range ) );
+
+	ivec2 offset = ChunkOffset + c;
+	ivec2 v      = centre + offset;
+	if( abs( offset.x ) > Window || abs( offset.y ) > Window || abs( v.x ) > Range || abs( v.y ) > Range )
+	{
+		fragColor = -1;//not a candidate
+		return;
+	}
+
+	fragColor = sadAt( origin, v );
+}
+)";
+
+const char* const kMotionSelectBody = R"(
+uniform usampler2D Cur;
+uniform usampler2D Prev;
+uniform isampler2D Sads;     //one SAD per (block, candidate), -1 where not a candidate
+uniform isampler2D Coarse;
+uniform isampler2D Previous; //the best so far from earlier chunks, or the whole-pel winner in half-pel mode
+uniform int HasCoarse;
+uniform int HasPrevious;
+uniform ivec2 ImageSize;
+uniform int Range;
+uniform int ChunkSide;
+uniform ivec2 ChunkOffset;
+uniform int TieBreak;      //1: equal SADs prefer the smaller vector, zero first
+uniform int HalfPelMode;   //1: merge the half-pel neighbours into the whole-pel winner
+uniform int OutputHalfPel; //1: write half-pel units (level 0)
+
+out ivec4 fragColor;
+
+int curAt( ivec2 p )
+{
+	return int( texelFetch( Cur, clampTo( p, ImageSize ), 0 ).r );
+}
+
+int prevAt( ivec2 p )
+{
+	return int( texelFetch( Prev, clampTo( p, ImageSize ), 0 ).r );
+}
+
+//The zero vector's SAD, evaluated here so that zero is always a candidate
+//whether or not the window around the coarse vector happens to contain it.
+int sadZero( ivec2 origin )
+{
+	int sad = 0;
+	for( int j = -PAD; j < BLOCK + PAD; ++j )
+	{
+		for( int i = -PAD; i < BLOCK + PAD; ++i )
+		{
+			ivec2 p = origin + ivec2( i, j );
+			if( p.x < 0 || p.y < 0 || p.x >= ImageSize.x || p.y >= ImageSize.y )
+				continue;
+			sad += abs( curAt( p ) - prevAt( p ) );
 		}
 	}
 	return sad;
@@ -231,29 +340,62 @@ bool better( int sad, ivec2 v, int bestSad, ivec2 bestV )
 void main()
 {
 	ivec2 block  = ivec2( gl_FragCoord.xy );
-	ivec2 origin = block * Block;
+	ivec2 origin = block * BLOCK;
 
-	//Where to search. The coarsest level searches the whole range around
-	//zero; every finer level searches a small window around the doubled
-	//coarse vector, and zero is always a candidate as well.
+	if( HalfPelMode == 1 )
+	{
+		//Strictly better only: a tie keeps the whole-pel vector, which is
+		//the cheaper fetch and the one the tie-break already chose.
+		ivec4 whole = texelFetch( Previous, block, 0 );
+		ivec2 outV  = whole.xy * 2;
+		int outSad  = whole.z;
+		for( int cy = 0; cy < 3; ++cy )
+		{
+			for( int cx = 0; cx < 3; ++cx )
+			{
+				int sad = texelFetch( Sads, block * 3 + ivec2( cx, cy ), 0 ).r;
+				if( sad < 0 )
+					continue;
+				ivec2 hv = whole.xy * 2 + ivec2( cx - 1, cy - 1 );
+				if( sad < outSad )
+				{
+					outSad = sad;
+					outV   = hv;
+				}
+			}
+		}
+		fragColor = ivec4( outV, outSad, 0 );
+		return;
+	}
+
 	ivec2 centre = ivec2( 0 );
 	if( HasCoarse == 1 )
 		centre = clamp( texelFetch( Coarse, block, 0 ).xy * 2, ivec2( -Range ), ivec2( Range ) );
 
-	ivec2 bestV = ivec2( 0 );
-	int bestSad = sadAt( origin, bestV );
-
-	for( int dy = -Window; dy <= Window; ++dy )
+	ivec2 bestV;
+	int bestSad;
+	if( HasPrevious == 1 )
 	{
-		for( int dx = -Window; dx <= Window; ++dx )
-		{
-			ivec2 v = centre + ivec2( dx, dy );
-			if( v.x == 0 && v.y == 0 )
-				continue;
-			if( abs( v.x ) > Range || abs( v.y ) > Range )
-				continue;
+		ivec4 previous = texelFetch( Previous, block, 0 );
+		bestV          = previous.xy;
+		bestSad        = previous.z;
+	}
+	else
+	{
+		bestV   = ivec2( 0 );
+		bestSad = sadZero( origin );
+	}
 
-			int sad = sadAt( origin, v );
+	for( int cy = 0; cy < ChunkSide; ++cy )
+	{
+		for( int cx = 0; cx < ChunkSide; ++cx )
+		{
+			int sad = texelFetch( Sads, block * ChunkSide + ivec2( cx, cy ), 0 ).r;
+			if( sad < 0 )
+				continue;
+			ivec2 v = centre + ChunkOffset + ivec2( cx, cy );
+			if( v.x == 0 && v.y == 0 )
+				continue;//zero is already the opening candidate
 			if( better( sad, v, bestSad, bestV ) )
 			{
 				bestSad = sad;
@@ -262,38 +404,10 @@ void main()
 		}
 	}
 
-	ivec2 outV = bestV;
-	int outSad = bestSad;
-
 	if( OutputHalfPel == 1 )
-	{
-		outV = bestV * 2;
-		if( HalfPel == 1 )
-		{
-			//The eight half-pel neighbours of the whole-pel winner. Strictly
-			//better only: a tie keeps the whole-pel vector, which is the
-			//cheaper fetch and the one the tie-break already chose.
-			for( int hy = -1; hy <= 1; ++hy )
-			{
-				for( int hx = -1; hx <= 1; ++hx )
-				{
-					if( hx == 0 && hy == 0 )
-						continue;
-					ivec2 hv = bestV * 2 + ivec2( hx, hy );
-					if( abs( hv.x ) > 2 * Range || abs( hv.y ) > 2 * Range )
-						continue;
-					int sad = sadHalfAt( origin, hv );
-					if( sad < outSad )
-					{
-						outSad = sad;
-						outV   = hv;
-					}
-				}
-			}
-		}
-	}
+		bestV *= 2;
 
-	fragColor = ivec4( outV, outSad, 0 );
+	fragColor = ivec4( bestV, bestSad, 0 );
 }
 )";
 
@@ -570,6 +684,12 @@ void main()
 std::string assemble( const char* body )
 {
 	return std::string( "#version 410 core\n" ) + kCommon + body;
+}
+
+std::string assembleMotion( const char* body, int block, int pad )
+{
+	return std::string( "#version 410 core\n#define BLOCK " ) + std::to_string( block ) + "\n#define PAD "
+	       + std::to_string( pad ) + "\n" + kCommon + body;
 }
 
 } // namespace residual::shaders

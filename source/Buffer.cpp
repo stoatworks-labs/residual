@@ -27,6 +27,7 @@ bool layoutFor( GLenum internalFormat, Layout& out )
 	case GL_RGBA8UI: out = { GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, Layout::Unsigned }; return true;
 	case GL_R8UI:    out = { GL_RED_INTEGER, GL_UNSIGNED_BYTE, Layout::Unsigned }; return true;
 	case GL_R32UI:   out = { GL_RED_INTEGER, GL_UNSIGNED_INT, Layout::Unsigned }; return true;
+	case GL_R32I:    out = { GL_RED_INTEGER, GL_INT, Layout::Signed }; return true;
 	case GL_RGBA32I: out = { GL_RGBA_INTEGER, GL_INT, Layout::Signed }; return true;
 	case GL_RGBA32F: out = { GL_RGBA, GL_FLOAT, Layout::Float }; return true;
 	default: return false;

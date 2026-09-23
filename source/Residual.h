@@ -179,10 +179,23 @@ public:
 		tieBreakForTest = tieBreak;
 	}
 
+	/// Skip the one-uint readback that feeds the scene-cut decision, so the
+	/// bench can say what the synchronisation costs against what the search
+	/// costs. With it off the detector never fires.
+	void SetReadbackForTest( bool readback )
+	{
+		readbackForTest = readback;
+	}
+
 private:
 	/// Bring every buffer to this frame's shape. Returns false if GL refused;
 	/// sets `referenceLost` if the decoded frame was reallocated.
 	bool ensureBuffers( int width, int height, int blockSize, int levels, bool& referenceLost );
+
+	/// The motion search at one pyramid level, coarsest first: SAD chunks,
+	/// each merged by a select pass, landing in `target`. `finalHalfPel`
+	/// writes half-pel units (level 0).
+	void searchLevel( int level, int levels, int blockSize, int range, bool halfPel, int cur, int prv );
 
 	/// Decide whether this frame is intra, from the GOP, the scene cut, the
 	/// Refresh trigger, the Drop I latch and whether there is a reference at
@@ -194,7 +207,11 @@ private:
 	ffglex::FFGLShader copyShader;
 	ffglex::FFGLShader lumaShader;
 	ffglex::FFGLShader downsampleShader;
-	ffglex::FFGLShader motionShader;
+	/// One pair of motion programs per (block, pad) pair the levels can ask
+	/// for: 8, 16 and 32 at level 0 with no pad, and 4, 8 and 16 with half
+	/// their width of pad above it. See kMotionVariants in Residual.cpp.
+	ffglex::FFGLShader motionSadShaders[ 6 ];
+	ffglex::FFGLShader motionSelectShaders[ 6 ];
 	ffglex::FFGLShader sadRowsShader;
 	ffglex::FFGLShader sadTotalShader;
 	ffglex::FFGLShader predictShader;
@@ -213,6 +230,8 @@ private:
 	residual::Buffer decoded[ 2 ];  ///< RGBA8UI, the reconstruction, ping-ponged
 	residual::Buffer pyramid[ 2 ][ residual::codec::kMaxLevels ]; ///< R8UI luma, per source
 	residual::Buffer vectors[ residual::codec::kMaxLevels ];      ///< RGBA32I, one per level
+	residual::Buffer vectorsScratch; ///< RGBA32I, the other half of the chunk merge's ping-pong
+	residual::Buffer sads;           ///< R32I, one SAD per (block, candidate): 9x the block grid each way
 	residual::Buffer predicted;     ///< RGBA8UI
 	residual::Buffer coef[ 2 ];     ///< RGBA32F, padded to whole 8x8 blocks
 	residual::Buffer sadRows;       ///< R32UI, 1 x blocksY
@@ -252,6 +271,7 @@ private:
 
 	bool openLoopForTest = false;
 	bool tieBreakForTest = true;
+	bool readbackForTest = true;
 
 	//-----------------------------------------------------------------------
 	// The host's clock, recorded and logged, used for nothing else.

@@ -1,0 +1,94 @@
+name: ci
+
+# Both platforms on every push and pull request, so a Dependabot bump has a
+# status check to gate on and a GLEW-shaped break -- which macOS is
+# structurally blind to, because macOS never links GLEW -- is caught before a
+# tag. There is no Linux job: the CMakeLists branches on APPLE and WIN32, and
+# Resolume has no Linux build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        # arm64 only, unlike the release build's universal arm64;x86_64 -- the
+        # second slice doubles the build for no extra signal, because a source
+        # break is not architecture-specific. tools/verify.sh is the one that
+        # builds universal, and it runs on the development machine.
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DRESIDUAL_BUILD_TOOLS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: The checks
+        # A GitHub macOS runner has NO ACCELERATED GL CONTEXT, so everything
+        # here runs on the software rasteriser. That is the point of running it
+        # at all rather than only locally: every claim in this repo is integer
+        # arithmetic through texelFetch -- a block copy, a reversible colour
+        # transform, a rounded residual with a derived float bound -- and none
+        # of it should care which rasteriser produced the pixels. If one of
+        # them starts failing here and passes on a development machine, the
+        # check is wrong, not the plugin. Four of six plugins in this fleet
+        # learned that the hard way in September 2026.
+        #
+        # --transform needs no GL at all and would still pass on a runner where
+        # creating a context fails outright, so ctest runs it first.
+        timeout-minutes: 40
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Controls
+        # At 320x180, which is what the sweep runs at everywhere: the question
+        # is only whether a control changed ANY pixel.
+        timeout-minutes: 25
+        run: python3 tools/sweep.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: residual-macos-arm64
+          path: build/*.bundle
+          if-no-files-found: error
+
+  windows:
+    name: Windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        # The toolchain path MUST stay double-quoted: a `run:` step on Windows
+        # is PowerShell, and unquoted this expands to nothing.
+        #
+        # Tools OFF: the harness stands up a CGL context directly and is macOS
+        # only. What this job proves is that the plugin itself compiles against
+        # GLEW, which macOS never links and so can never break here.
+        run: >
+          cmake -B build -A x64
+          -DCMAKE_BUILD_TYPE=Release
+          -DRESIDUAL_BUILD_TOOLS=OFF
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: residual-windows-x86_64
+          path: build/Release/*.dll
+          if-no-files-found: error
