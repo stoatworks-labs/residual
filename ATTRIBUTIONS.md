@@ -1,82 +1,79 @@
 # Attributions
 
-Residual is built on other people's work. This file lists what that work is, who
-did it, and what it is doing here.
+Residual is built on other people's work. This file lists what that work is, who did
+it, and what it is doing here.
 
-> **Provisional.** Across the fleet this file is generated from master lists in
-> `stoatworks-backend` by `scripts/sync-attributions.py`. Residual is not
-> registered there yet, so this copy is hand-written. Register it before release
-> — and note that the script's `--only` flag truncates the file rather than
-> filtering it.
+It is generated — the master lists live in the `stoatworks-backend` repo and are
+pushed out by `scripts/sync-attributions.py`. Edit it there, not here.
+
+## Code we derived from other people's work
+
+Someone else solved this first, and this project would not exist in its current form without their work.
+
+### Diag and the harness shape — Stoatworks tinsel
+
+<https://github.com/stoatworks-labs/tinsel>  
+Licence: MIT  
+Copyright: Stoatworks Labs
+
+source/Diag.{h,cpp} is tinsel's, by way of photofinish, with only its header comment changed; the harness's PNG writer, CGL context and rig, tools/sweep.py and tools/verify.sh follow photofinish's shape where the job is the same.
+
+### Onset detector — Stoatworks macroblock
+
+<https://github.com/stoatworks-labs/macroblock>  
+Licence: MIT  
+Copyright: Stoatworks Labs
+
+source/Onset.cpp is macroblock's spectral-flux design, positive change between raw frames against an adaptive floor, counted in frames instead of seconds and primed on the first frame.
 
 ## Third-party code this project uses
 
+Libraries, SDKs and frameworks the project is built on or bundles.
+
 ### Resolume FFGL SDK
 
-<https://github.com/resolume/ffgl>
-Licence: BSD-3-Clause
+<https://github.com/resolume/ffgl>  
+Licence: BSD-3-Clause  
 Copyright: FreeFrame
 
-Vendored as a git submodule at `external/ffgl`, pinned to `b1afaf9`.
+Vendored as a git submodule at external/ffgl (third_party/ffgl in oxbow).
 
-The plugin ABI itself. An FFGL effect is defined by this SDK's headers — there is
-no other way to be loadable by Resolume Arena and Avenue.
+The plugin ABI itself. An FFGL effect or source is defined by this SDK's headers — there is no other way to be loadable by Resolume Arena and Avenue.
 
 ### GLEW — the OpenGL Extension Wrangler Library
 
-<https://github.com/nigels-com/glew>
-Licence: BSD-3-Clause (with Mesa 3-D and Khronos components)
+<https://github.com/nigels-com/glew>  
+Licence: BSD-3-Clause (with Mesa 3-D and Khronos components)  
 Copyright: Milan Ikits, Marcelo E. Magallon and Lev Povalahev
 
-Windows only, from vcpkg, statically linked. The SDK's headers pull it in for the
-OpenGL function pointers; macOS uses the system OpenGL framework instead.
+Arrives inside the FFGL submodule at external/ffgl/deps/glew-2.1.0. Not fetched separately.
 
-### zlib
+Resolves OpenGL entry points on Windows, where the system headers stop at OpenGL 1.1.
 
-<https://zlib.net>
-Licence: zlib
-Copyright: Jean-loup Gailly and Mark Adler
+### libpng
 
-Linked from the system, by the offline harness only, so that `rstest --out` can
-write a PNG in fifty lines instead of vendoring an image library. It is not in
-the plugin.
+<http://www.libpng.org/pub/png/libpng.html>  
+Licence: PNG Reference Library License (libpng)  
+Copyright: the PNG Reference Library authors
 
-## Work from elsewhere in the fleet
+Arrives inside the FFGL submodule, under the SDK's CustomThumbnail sample.
 
-### photofinish and tinsel
+Part of the upstream SDK tree rather than something these plugins call directly — listed because it is present in the checkout.
 
-<https://github.com/stoatworks-labs/tinsel>
-Licence: MIT
-Copyright: Stoatworks Labs
+## Inspirations
 
-`source/Diag.{h,cpp}` is tinsel's, by way of photofinish, with only its header
-comment changed. The harness's PNG writer, CGL context and rig, `tools/sweep.py`
-and `tools/verify.sh` follow photofinish's shape line for line where the job is
-the same. `PassBuffer` was deliberately **not** copied — see `Buffer.h` for why
-an integer render target cannot be an `ffglex::FFGLFBO`.
+What this set out to be. No code, assets or binaries from any of these were used or examined — the debt is to the idea.
 
-### macroblock
+### Hybrid block-based video codecs
 
-<https://github.com/stoatworks-labs/macroblock>
-Licence: MIT
-Copyright: Stoatworks Labs
+Block-matching motion estimation, closed-loop prediction from the reconstructed frame, a quantised 8x8 DCT residual and a GOP: the shape of every hybrid video codec since H.261. Nothing was ported from any codec's source; the implementation is written from the arithmetic.
 
-The onset detector in `source/Onset.cpp` is macroblock's spectral-flux design —
-positive change between raw frames against an adaptive floor — counted in frames
-instead of seconds and primed on the first frame.
+## Standards and published specifications
 
-### The About block
+What the implementation is measured against.
 
-`source/StoatworksAbout*.h` come from `stoatworks-backend/about`. They are
-vendored into every plugin in the fleet by `scripts/sync-about.py`; this copy is
-**hand-written and provisional**, because Residual is not registered in the
-backend yet.
+- **H. Malvar and G. Sullivan, "YCoCg-R: A Color Space with RGB Reversibility and Low Dynamic Range" (JVT-I014, 2003)** — The reversible integer colour transform, as used by H.264's High 4:4:4 profile for lossless coding, implemented from the contribution.
 
-## Prior art, not code
+## Getting this wrong
 
-The colour transform is **YCoCg-R**, the reversible integer form from Malvar and
-Sullivan's 2003 JVT contribution, which H.264's High 4:4:4 profile uses for
-lossless coding. The rest is the shape of every hybrid video codec since H.261:
-block-matching motion estimation, closed-loop prediction from the reconstructed
-frame, a quantised 8×8 DCT residual, and a GOP. Nothing was ported from any
-codec's source; the implementation here is written from the arithmetic.
+If your work is here and the description is inaccurate, the licence is wrong, or you would rather not be listed — open an issue and it will be fixed.
