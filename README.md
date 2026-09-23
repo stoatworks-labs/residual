@@ -62,6 +62,14 @@ happens when one term of it is taken away:
 <sub>Vector Hold at 30 frames and Vector Scale at 2. The estimator found the disc moving
 once; the decoder has been applying that motion, doubled, ever since.</sub>
 
+[![Residual — datamosh built as a real codec, for Resolume](docs/video-thumb.png)](https://www.youtube.com/watch?v=2KrF01zB9mA)
+
+*[Watch it](https://www.youtube.com/watch?v=2KrF01zB9mA) — 50 seconds:
+the old picture carried on by the new clip's motion when the I-frame is dropped at a cut, Refresh cleaning it up, the bloom from held and stretched vectors, a mosh healing at a Residual Gain just above zero, hard quantisation drifting until the next I-frame, and the vector field itself. Every frame is the real plugin's output: an FFGL plugin has no window,
+so the footage is rendered by this repository's own offline harness
+(`rstest --pipe`, driven by a cue sheet) rather than filmed off a screen, and
+the clips are Resolume's bundled demo media.*
+
 ## Controls
 
 **Encoder** — the codec as an encoder would build it.
