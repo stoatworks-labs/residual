@@ -13,8 +13,9 @@
 > perturbations of the model are asserted to make those checks *fail* (`--negative`). All
 > fourteen sweepable controls are proven to change the picture (`tools/sweep.py`), and the
 > bundle registers, instantiates and renders 120 frames in the fleet's `oxbow` host.
-> **It has never been loaded into Resolume.** The last step of proof is a screenshot
-> nobody has taken.
+> **It has never been loaded into Resolume on macOS.** On Windows, a build of v0.1.0
+> loads, registers and renders in Resolume Arena 7.27.1 with every control as declared,
+> on software rendering. See [Status](#status).
 
 Datamosh, built as a real codec, for Resolume Arena and Avenue.
 
@@ -129,21 +130,31 @@ lossless" is a bitwise claim and not a tolerance.
 
 **v0.1.0, 2026-09-23, and honestly early.**
 
-- **It has never been loaded into Resolume**, and is not installed anywhere. Everything
-  here was compiled, rendered and measured offline against the real plugin class in a
-  headless GL context, plus one load in the fleet's own [oxbow](https://github.com/stoatworks-labs/oxbow)
+- **It has never been loaded into Resolume on macOS.** Everything numeric here was
+  compiled, rendered and measured offline against the real plugin class in a headless GL
+  context, plus one load in the fleet's own [oxbow](https://github.com/stoatworks-labs/oxbow)
   host, which confirms it registers, instantiates and renders as `SW Residual` / `RS01`
   / effect.
-- 296 assertions across nine check suites, all passing (`tools/verify.sh`). Every
-  tolerance is a lattice — one code value, one block, or none at all — and seven negative
+- **Windows, in Resolume Arena 7.27.1** (win-lab, Mesa llvmpipe, no GPU, 2026-09-23): a
+  CI build of this source loads from Extra Effects, registers as `SW Residual` / `RS01` /
+  effect, all 22 host controls match the declaration in name, order, type, range and
+  default, it renders, and Arena's log stays clean: 8 of 9 of the fleet gate's checks.
+  The ninth, controls, read Search Range, Half Pel, Scene Cut, Scene Threshold and Drop I
+  dead, because the gate holds a still picture and a codec's motion search and scene-cut
+  detector have nothing to find in one — no motion, no cut. `tools/sweep.py`, which feeds
+  moving pictures and cuts, proves all five live. Software rendering says nothing about a
+  GPU or about speed.
+- 296 assertions across nine check suites, all passing (`tools/verify.sh`), locally and
+  in CI on GitHub's GPU-less macOS runner. Every tolerance is a lattice — one code value, one block, or none at all — and seven negative
   controls prove the checks can fail. One character changed in the shipped predict shader
   fails `--mosh` in all six cases. The audit of every check is in `AGENTS.md`.
 - Measured on macOS (Apple Silicon) at the defaults (16-pixel blocks, ±16 search,
   three pyramid levels): **5.1 ms/frame at 720p, 6.1 at 1080p, 14.0 at 4K**, of which the
   one-integer scene-cut readback — a CPU–GPU synchronisation — is roughly 1 ms. The
   motion search is the cost, and it scales with the search: 8-pixel blocks at ±32 run
-  at about 50 ms a frame at every raster, which is not a setting for a show. Never run on
-  Windows, on Intel, or on a rasteriser without a GPU behind it.
+  at about 50 ms a frame at every raster, which is not a setting for a show. Never
+  timed on Windows, on Intel (where it has never run), or on a rasteriser without a GPU
+  behind it.
 - **Chroma is coded at full resolution.** Co and Cg get their own quantiser but are not
   subsampled to 4:2:0; the chroma-block look of a real mosh is not here yet.
 - **The scene-cut detector only judges frames whose vectors are fresh.** Under Vector
@@ -151,9 +162,8 @@ lossless" is a bitwise claim and not a tolerance.
   about this one.
 - **Alpha is not coded.** The decoded frame carries the current source's alpha through.
 - No factory presets. No OpenFX port, no browser demo — neither is required for 0.1.0.
-- `StoatworksAbout*.h` and `ATTRIBUTIONS.md` are provisional hand copies; the project is
-  not registered in the fleet's backend yet, so the About block has no button for the user
-  guide ([docs/USER-GUIDE.md](docs/USER-GUIDE.md)) until it is.
+- The user guide is [docs/USER-GUIDE.md](docs/USER-GUIDE.md); the About block's fourth
+  button opens it.
 
 ## Installing
 

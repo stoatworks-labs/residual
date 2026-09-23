@@ -104,14 +104,15 @@ Each check, one line each:
   `ReadVectorsForTest`, and the `LastXxxForTest` frame facts.
 
 ## Not done yet
-- Not yet loaded into Resolume, and not installed anywhere.
-- No release tag, no GitHub repo, not registered on the website.
-- `StoatworksAbout*.h` and `ATTRIBUTIONS.md` are provisional hand copies, with
-  `guide=""`: `docs/USER-GUIDE.md` exists, but its URL is the backend's to hand out,
-  so the About block has no guide button until registration regenerates the header.
+- **Never loaded into Resolume on macOS.** The Windows CI build of v0.1.0 passed the
+  Arena gate 8 of 9 on win-lab (Arena 7.27.1, llvmpipe) on 2026-09-23; the ninth read
+  Search Range, Half Pel, Scene Cut, Scene Threshold and Drop I dead on the gate's
+  still picture, and `tools/sweep.py` proves them live.
 - No 4:2:0 chroma subsampling (Co/Cg are coded at full resolution with their own
   quantiser), no B-frames, no factory presets, no OpenFX port, no browser demo.
-- Never run on Windows, on Intel, or on a GPU-less rasteriser.
+- Never run on Intel. CI runs the nine suites and the sweep on GitHub's GPU-less
+  macOS runner (Apple's software rasteriser), green; the plugin also rendered on
+  llvmpipe in the Arena gate.
 
 ## Diagnostics
 

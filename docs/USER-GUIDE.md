@@ -23,7 +23,7 @@ motion ever since.*
 > frames; and seven deliberate faults are shown to make those checks fail. All 14 controls that
 > act on the picture are shown to change it. It has **never been loaded into Resolume on macOS**
 > — the one host it has run in is the fleet's own test host, `oxbow`, for 120 frames.
-> On Windows: (to be filled after the Arena run).
+> On Windows, a build of v0.1.0 loads, registers and renders in Resolume Arena 7.27.1, with every control matching what the plugin declares — on software rendering, so that says nothing about a GPU. Five controls that need motion or a scene cut to act on (Search Range, Half Pel, Scene Cut, Scene Threshold and Drop I) could not be shown moving there on a still picture.
 > Try it on a spare layer before you put it in a show.
 >
 > This codebase was created with AI assistance, directed and reviewed by a human author.
@@ -367,8 +367,8 @@ at frame 60 the host's clock, the block grid and the scene-cut measure.
 - **The cut detector is blind during a Vector Hold.**
 - **Alpha is not coded.** The output carries the clip's alpha.
 - **8-pixel blocks with a wide search are expensive** — about 50 ms a frame.
-- **Never run on Intel or on a machine without a GPU**, although the macOS build contains an Intel
-  slice.
+- **Never run on Intel**, although the macOS build contains an Intel slice. Without a GPU it
+  has run only in automated checks and the Windows check above, never for a show.
 - **No presets**, no OpenFX version and no browser demo.
 
 ---
@@ -376,7 +376,8 @@ at frame 60 the host's clock, the block grid and the scene-cut measure.
 ## About
 
 The last group, **About**, carries the plugin's name, version, licence and maker, and buttons
-that open the project page, the source on GitHub and the support page in your browser.
+that open this user guide, the project page, the source on GitHub and the support page in your
+browser.
 
 ## Reporting something
 

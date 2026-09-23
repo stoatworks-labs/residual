@@ -4,7 +4,7 @@
 codec — block-matching motion estimation, closed-loop prediction, a quantised DCT
 residual, a GOP — with controls that break one stage of it at a time, which is
 what datamosh is. C++17 + GLSL 4.10, CMake, universal macOS `.bundle` and a
-Windows `.dll`. MIT. Intended home `github.com/stoatworks-labs/residual`.
+Windows `.dll`. MIT. Home `github.com/stoatworks-labs/residual`, released v0.1.0.
 
 `CLAUDE.md` is the command reference — build, render, verify. This file is the
 *why*: read it before touching the motion search, the colour transform, the GOP
@@ -212,8 +212,10 @@ this repo's to say); the GPU memory column is computed from the buffers
 `ensureBuffers` allocates, not measured; and "put it on the layer, not the clip"
 rests on a clip effect being its own instance, which is how Resolume's clip
 effect chains work but has not been watched happening with this plugin. The
-About block keeps `guide=""` -- its URL is the backend's to hand out -- so the
-guide's About section lists only the three buttons that exist.
+About block kept `guide=""` -- its URL is the backend's to hand out -- so the
+guide's About section listed only the three buttons that existed. (Registration
+has since generated the header with the guide URL, and the About section lists
+the fourth button.)
 
 ---
 
@@ -456,13 +458,21 @@ depends on and the others do not. Reverted; nothing left behind.
 
 **Assumed, or not yet done:**
 
-- **Never loaded into Resolume.** Everything here was compiled, rendered and
-  measured offline against the real plugin class in a headless CGL context,
-  plus one load in the fleet's own `oxbow` host. Nothing has driven Arena. How
-  the parameters *present* — four groups, two dropdowns, three integer sliders,
-  a button and an audio picker — is untested, and so is what Resolume does with
+- **Never loaded into Resolume on macOS.** On Windows, v0.1.0's CI build passed
+  the fleet Arena gate 8 of 9 in Arena 7.27.1 on llvmpipe (2026-09-23): it loads,
+  registers as `SW Residual` / `RS01` / effect, all 22 host controls match the
+  declaration, it renders and the log is clean. The ninth, controls, read Search
+  Range, Half Pel, Scene Cut, Scene Threshold and Drop I dead: the gate holds a
+  still picture, and a motion search and a scene-cut detector have nothing to
+  find in one. `tools/sweep.py` feeds moving pictures and cuts and proves them
+  live. Everything else here was compiled, rendered and measured offline against
+  the real plugin class in a headless CGL context, plus one load in the fleet's
+  own `oxbow` host. How the parameters *present* on macOS — four groups, two
+  dropdowns, three integer sliders, a button and an audio picker — is untested, and so is what Resolume does with
   an FFT buffer parameter on a plugin that also declares `SetTimeSupported`.
-- **Never run on Windows, on Intel, or on a GPU-less rasteriser.**
+- **Never run on Intel.** CI runs all nine check suites and the sweep on
+  GitHub's GPU-less macOS runner, on Apple's software rasteriser, and they pass
+  there; the plugin also rendered on llvmpipe in the Arena gate.
 - **Resolume's 64 spectrum bins have never been measured.** The onset detector
   sums positive flux over all of them, so it does not depend on which bin is
   which — but its floor and margin were tuned on a synthetic spectrum and will
