@@ -107,7 +107,8 @@ Each check, one line each:
 - Not yet loaded into Resolume, and not installed anywhere.
 - No release tag, no GitHub repo, not registered on the website.
 - `StoatworksAbout*.h` and `ATTRIBUTIONS.md` are provisional hand copies, with
-  `guide=""` because no user guide exists.
+  `guide=""`: `docs/USER-GUIDE.md` exists, but its URL is the backend's to hand out,
+  so the About block has no guide button until registration regenerates the header.
 - No 4:2:0 chroma subsampling (Co/Cg are coded at full resolution with their own
   quantiser), no B-frames, no factory presets, no OpenFX port, no browser demo.
 - Never run on Windows, on Intel, or on a GPU-less rasteriser.

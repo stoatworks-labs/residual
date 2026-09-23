@@ -50,7 +50,7 @@ happens when one term of it is taken away:
   pure motion: whatever was on screen flows wherever the vectors say.
 - **Vector Hold** — one frame's vectors are reused for the next N. The pixels keep
   travelling in the direction they were going. The bloom.
-- **Vector Scale** — the vectors are multiplied. Everything moves too far, or backwards.
+- **Vector Scale** — the vectors are multiplied. Everything moves too far, or (at 0) not at all.
 - **Q** — the residual is quantised harder. Blocks, and a closed loop that slowly loses
   the picture between I-frames.
 - **Refresh** — one I-frame, now. The operator's clean-up button, which works whatever
@@ -152,8 +152,8 @@ lossless" is a bitwise claim and not a tolerance.
 - **Alpha is not coded.** The decoded frame carries the current source's alpha through.
 - No factory presets. No OpenFX port, no browser demo — neither is required for 0.1.0.
 - `StoatworksAbout*.h` and `ATTRIBUTIONS.md` are provisional hand copies; the project is
-  not registered in the fleet's backend yet, so there is no user guide and no button that
-  would open one.
+  not registered in the fleet's backend yet, so the About block has no button for the user
+  guide ([docs/USER-GUIDE.md](docs/USER-GUIDE.md)) until it is.
 
 ## Installing
 

@@ -25,7 +25,7 @@ removed:
   old picture;
 - gain 0: nothing ever corrects the prediction;
 - hold the vectors: the pixels keep going the way they were going — the bloom;
-- scale the vectors: everything moves too far, or backwards;
+- scale the vectors (0 to 4x): everything moves too far, or not at all;
 - Q high: blocks, and a loop that slowly loses the picture between I-frames.
 
 Nothing is drawn. The controls that produce the looks are the codec's own
@@ -200,6 +200,20 @@ a frame is read, and so are the About buttons (they open a browser) and Audio
 (a spectrum, not a number). The clock is `SetTime( n * 1000 / fps )` in
 milliseconds from the frame number, as Resolume sends it, never accumulated --
 and used by the plugin for one log line.
+
+**The user guide claims only what the code does.** `docs/USER-GUIDE.md` was
+written against `Controls.cpp`, `decideIntra`, `Onset.cpp` and the predict and
+composite shaders, not against the README. Writing it found one README claim the
+code does not support -- Vector Scale moving things "backwards"; the control is
+0 to 4x and cannot reverse -- and that line was corrected. Three things are
+stated with care rather than guessed: the macOS download's signing is not
+described (the release job signs ad hoc; whether the fleet re-signs it is not
+this repo's to say); the GPU memory column is computed from the buffers
+`ensureBuffers` allocates, not measured; and "put it on the layer, not the clip"
+rests on a clip effect being its own instance, which is how Resolume's clip
+effect chains work but has not been watched happening with this plugin. The
+About block keeps `guide=""` -- its URL is the backend's to hand out -- so the
+guide's About section lists only the three buttons that exist.
 
 ---
 
