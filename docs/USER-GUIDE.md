@@ -369,7 +369,10 @@ at frame 60 the host's clock, the block grid and the scene-cut measure.
 - **8-pixel blocks with a wide search are expensive** — about 50 ms a frame.
 - **Never run on Intel**, although the macOS build contains an Intel slice. Without a GPU it
   has run only in automated checks and the Windows check above, never for a show.
-- **No presets**, no OpenFX version and no browser demo.
+- **No presets** and no OpenFX version.
+- **There is a browser demo** at [residual-demo.stoatworks-labs.com](https://residual-demo.stoatworks-labs.com).
+  It is a port to a web page, not the plugin: the shaders run in WebGL2 and any CPU
+  half is rewritten in JavaScript. The page lists what it does not reproduce.
 
 ---
 
