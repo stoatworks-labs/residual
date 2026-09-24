@@ -50,8 +50,8 @@ smeared by them.</sub>
 
 | Build | Download | Size |
 | --- | --- | --- |
-| Universal (Apple Silicon + Intel) · .dmg disk image | [`residual-0.1.0-macos-universal.dmg`](https://github.com/stoatworks-labs/residual/releases/download/v0.1.0/residual-0.1.0-macos-universal.dmg) | 440 KB |
-| Universal (Apple Silicon + Intel) · .zip archive | [`residual-macos-universal.zip`](https://github.com/stoatworks-labs/residual/releases/latest/download/residual-macos-universal.zip) | 179 KB |
+| Universal (Apple Silicon + Intel) · .dmg disk image | [`residual-0.1.0-macos-universal.dmg`](https://github.com/stoatworks-labs/residual/releases/download/v0.1.0/residual-0.1.0-macos-universal.dmg) | 236 KB |
+| Universal (Apple Silicon + Intel) · .zip archive | [`residual-macos-universal.zip`](https://github.com/stoatworks-labs/residual/releases/latest/download/residual-macos-universal.zip) | 196 KB |
 
 </details>
 
@@ -67,7 +67,7 @@ smeared by them.</sub>
 
 All builds, checksums and release notes: [github.com/stoatworks-labs/residual/releases](https://github.com/stoatworks-labs/residual/releases).
 
-The Windows builds are unsigned, so SmartScreen warns once.
+macOS builds are signed and notarised and open normally. The Windows builds are unsigned, so SmartScreen warns once.
 
 <!-- downloads:end -->
 
